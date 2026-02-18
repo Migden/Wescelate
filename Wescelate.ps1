@@ -84,7 +84,7 @@ function PrintLineFinish {
 
 function GetContextGroups {
     $ContextGroups = try {
-        whoami /groups /fo csv | Select-Object -Skip 3 | ConvertFrom-Csv -Header Groups | Select-Object -ExpandProperty Groups
+        whoami /groups /fo csv | Select-Object -Skip 2 | ConvertFrom-Csv -Header Groups | Select-Object -ExpandProperty Groups
     } catch {
         Write-Error "Can't use Native Command, Check PATH"
         return
@@ -242,7 +242,7 @@ function InstalledApplications {
 }
 
 function GetServiceBinaries {
-    $results = try { Get-CimInstance -ClassName win32_service | Select-Object Name,State,PathName | Where-Object {$_.State -like 'Running'} } catch {Write-Error "Error Occurred When Executing command"; return}
+    $results = try { Get-CimInstance -ClassName win32_service -ErrorAction Stop | Select-Object Name,State,PathName } catch {Write-Error "Error Occurred When Executing command"; return}
     $global:ServiceBinariesPath = $results.PathName
     $global:ServiceBinariesName = $results.Name
 
@@ -279,12 +279,19 @@ function IsPathVulnerable {
 
 function DisplayDefenderInfo {
     $DefenderInfo = try {
-        Get-MpComputerStatus
+        Get-MpComputerStatus -ErrorAction Stop
     } catch {
-        Write-Error "Can't Get Native Windows Command, Check PATH"
-        return
+        $DefenderInfo = $false
     }
 
+    if (!$DefenderInfo) {
+        Write-Host "Windows Defender Anti-Virus Is DISABLED" -ForegroundColor Red
+        Write-Host "Windows Defender Anti-Malware Is DISABLED" -ForegroundColor Red
+        Write-Host "Real Time Protection is DISABLED" -ForegroundColor Red
+        Write-Host
+        Write-Host "Windows Defender Signatues last updated on: N/A"
+        return
+    }
     if ($DefenderInfo.AntivirusEnabled) {
         Write-Host "Windows Defender Anti-Virus Is Active"
     } else {
@@ -427,7 +434,7 @@ function GetHistory {
     # Look for other users console history
     $ConsoleHistoryDir = "\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\"
     $UserDirs = try {
-        get-childitem "C:\Users" | select-object -ExpandProperty Name
+        get-childitem "C:\Users" -ErrorAction Stop | select-object -ExpandProperty Name
     } catch {
         Write-Error "Can't Find Users Powershell History"
         return
@@ -438,7 +445,7 @@ function GetHistory {
     foreach ($i in $UserDirs) {
         $UserPowershellHistoryPath = "C:\Users\" + $i + $ConsoleHistoryDir
         try {
-            $files = Get-ChildItem $UserPowershellHistoryPath | select-object -ExpandProperty Name
+            $files = Get-ChildItem $UserPowershellHistoryPath -ErrorAction Stop | select-object -ExpandProperty Name
             if ($files) {
                 Write-Host "Files found in user" $i "Powershell History Directory:" $UserPowershellHistoryPath -ForegroundColor Red
                 foreach($j in $files) {
@@ -447,8 +454,7 @@ function GetHistory {
             }
         }
         catch {
-            Write-Error "Can't Run Native Windows Command, Check PATH"
-            return
+            Write-Host "Cant Find Powershell History For User:" $i
         }
     }
 
@@ -472,7 +478,7 @@ function WescelateDefault {
 	}
 
     Write-Host $global:ProgramBanner -ForegroundColor Green
-    Write-Host "====================================================================" -ForegroundColor Yellow
+    Write-Host "====================================================================" -ForegroundColor DarkGreen
     Write-Host
     DisplayDefenderInfo
     Write-Host
@@ -492,9 +498,11 @@ function WescelateDefault {
 
 <#
     TO DO:
+    - Service Binary Executable Write Check
     - Create function to display service binaries in better view
     - Get Permission on Registry Objects
     - Make a seperate mode for Domain Users, such as doamin information and powerview features such as GPO enumeartion
     - Make a feature to launch a Backdoor eg. (bind shell)
 #>
+
 WescelateDefault
