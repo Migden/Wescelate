@@ -47,13 +47,14 @@ $global:FilesToSearch = @(
 
 $global:VulnerablePrivileges = @{
 	'SeImpersonatePrivilege'="It May Be vulnerable to Potato Exploits"
-	'SeAssignPrimaryPrivilege'="This Privilege is Vulnerable"
+	'SeAssignPrimaryTokenPrivilege'="It May Be vulnerable to Potato Exploits"
 	'SeBackupPrivilege'="This User Can Read any Local System File"
 	'SeTcbPrivilege'="This User Can impersonate Any User"
     'SeCreateTokenPrivilege'="This Privilege is Vulenrable"
     'SeLoadDriverPrivilege'="This Privilege is Vulnerable"
     'SeDebugPrivilege'="This User can read any Process Memory"
     'SeRestorePrivilege'="This User Can Read any Local System File"
+    'SeTakeOwnershipPrivilege'="User can take ownership of files or other objects"
 }
 
 $global:ContextGroups = @()
@@ -316,18 +317,22 @@ function DisplayDefenderInfo {
 
 function AreCurrentServicePathsVulnerable {
     GetServiceBinaries
+    $VulnSrvList = @()
     $vulnerable = $false
     foreach ($i in $global:ServiceBinariesPath) {
         if (IsPathVulnerable($i)) {
-                Write-Host "VULNERABLE Service Path Found:" $i -ForegroundColor Red
+                Write-Host "UNQUOTED Service Path Found:" $i -ForegroundColor Red
                 $vulnerable = $true
+                $VulnSrvList += $i
         }
     }
 
     if ($vulnerable) {
-        Write-Host "A Current Service Binary Path is VULNERABLE" -ForegroundColor Red
+        Write-Host "A Current Service Binary Path is UNQUOTED" -ForegroundColor Red
+        return $VulnSrvList
     } else {
-        Write-Host "No Current Service Binary Paths are vulnerable"
+        Write-Host "No Current Service Binary Paths are unquoted"
+        return $false
     }
 }
 
@@ -357,14 +362,73 @@ function GetPowershellConsoleHistory {
     return $results
 }
 
+function CanWeHijackPath {
+    $VulnerableSerivcePaths = AreCurrentServicePathsVulnerable
+    $Paths2check = @()
+    foreach ($i in $VulnerableSerivcePaths) {
+        $array = $i -split '\\'
+        $var = ""
+        # Generate list of all valid Directorys in vulnerable path to attempt write access
+        for ($i = 0; $i -lt ($array.Count -1 ); $i++) {
+            $var += ($array[$i] + "\")
+            $Paths2check += $var
+        }
+    }
+    
+    # Armed with all directories is the Path, lets test our premissions
+    GetContextGroups
+    $PrivsToHijack = @(
+        "Modify"
+        "Write"
+        "FullControl"
+        "ReadAndExecute"
+    )
+
+    <# This following function does to following:
+        Stores the current privilege context of the script
+        Tests every group we are apart of for permissions on the directory
+        If the permissions return give us the ability to write or move a file, we print the user:privilege:path
+        
+        The gameplan was to create a hashtable to lookup the permissions, but some of the permissions return where
+        hexadecimal masks much like linux privileges, this interfered with the array and made the values act in
+        weird ways.
+
+        Instead of looping through an array of privilege and checking them against the hash table. I compared the string of
+        all the privileges to any `like` of the needed permissions
+    #>
+    foreach ($i in $Paths2check) {
+
+        $CurrentPrivilegeContext = $global:ContextGroups
+        $CurrentPrivilegeContext += $global:ContextName
+        foreach ($f in $CurrentPrivilegeContext) {
+            $PremissionsOnDirectory = GetPermissionsMain $i $f
+            $PremissionsOnDirectory = $PremissionsOnDirectory
+            foreach ($j in $PrivsToHijack) {
+                if ($PremissionsOnDirectory -like $j) {
+                    Write-Host "We Can Create a File At the Path:" $i "->" $f ":" $PremissionsOnDirectory -ForegroundColor Red  "(Potential Hijackaing vector)" # I am not adding functionality to get the file needed to place in order to hijack, can't be fucked
+
+                }
+            }
+
+        }
+    }
+}
+
 
 <#
     The Following Functions Utilise the Above modules, They will provide the features that I want this tool to have
 #>
 
+function ServiceVulnerabilities {
+
+}
+
+
+
 # Function that allows for file permissions to be tested against the authorization context of the script,
 # You can also provide the Identity to test, by default it will dump permissions for the script context
 # GetPermissions "C:\Users\User\test" "user"
+
 function GetPermissions {
     param(
         [Parameter(Mandatory=$false)]
@@ -470,7 +534,7 @@ function WescelateDefault {
         "AlwaysInstallElevated Enabled?" = { AlwaysInstallElevatedCheck }
         "Contents of AutoRun Registry Key" = { CheckRegistryAutoRuns }
         "Access On System Auto Runs" = { CheckStartupApps }
-        "Vulnerable Service Paths (Unqouted Paths)" = { AreCurrentServicePathsVulnerable }
+        "Vulnerable Service Paths (Unqouted Paths) - https://www.pentestpartners.com/security-blog/vulnerabilities-that-arent-unquoted-spaces/ " = { AreCurrentServicePathsVulnerable }
         "Command Line History" = { GetHistory }
 		"Current Installed Applications" = { InstalledApplications }
         "Stored Passwords" = { CheckForStoredPasswords }
@@ -498,11 +562,20 @@ function WescelateDefault {
 
 <#
     TO DO:
-    - Service Binary Executable Write Check
+    DONE - If A service path is unqouted, check all applicable paths to hijack to see If we can hijack
+    - Service Binary Executable Privilege Check
+    - Ability to view our privileges over a service itself
     - Create function to display service binaries in better view
     - Get Permission on Registry Objects
     - Make a seperate mode for Domain Users, such as doamin information and powerview features such as GPO enumeartion
     - Make a feature to launch a Backdoor eg. (bind shell)
+    - Add Windows Credential Manager vault check
+    - Directory in root directory
+    - Low hanging fruit from other script
+    - Add check for privilege DENY to avoid false administrator positives
+
 #>
 
-WescelateDefault
+#WescelateDefault
+CanWeHijackPath
+#GetPermissionsMain "C:\Program Files (x86)\Epic Games\Epic Online Services\" "BUILTIN\Administrators"
