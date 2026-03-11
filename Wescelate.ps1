@@ -2,12 +2,11 @@
 
 .SYNOPSIS
     Windows PrivEsc Enumeration Script for my OSCP exam attempt
-    and future endevours
+    and future endevours.
 
 
 .NOTES
     Author: Migwe101
-    RIP S.H
 
 
 #>
@@ -61,10 +60,13 @@ $global:ContextGroups = @()
 
 $global:ContextName = whoami
 
+$global:AllContext = @()
+
 $global:ServiceBinariesPath = @()
 
 $global:ServiceBinariesName = @()
 
+$global:CleanServicePaths = @()
 
 # End of Globals
 function PrintLineStart {
@@ -83,39 +85,40 @@ function PrintLineFinish {
 	Write-Host ("=" * 20)("=" * $StringPrinted.Length)("=" * 20) -ForegroundColor Blue
 	}
 
-function GetContextGroups {
-    $ContextGroups = try {
-        whoami /groups /fo csv | Select-Object -Skip 2 | ConvertFrom-Csv -Header Groups | Select-Object -ExpandProperty Groups
-    } catch {
-        Write-Error "Can't use Native Command, Check PATH"
-        return
-    }
-
-    $global:ContextGroups = $ContextGroups
-
-}
-
 function GetPermissionsMain {
     param(
+        [Parameter(Mandatory=$false)] # Set to non-mandetory to prevent needing to rewrite previous function calls before the registry functionality was added
         [string]$Path,
-        [string]$IdentityToQuery
+        [string]$IdentityToQuery,
+        [bool]$IsRegistry
     )
 
-    $PermissionsOfObjects
-    $acl = try {
-        get-acl $Path | Select-Object Access | ForEach-Object {$_.Access | Select-Object IdentityReference,FileSystemRights}
-    } catch {
-        Write-Error "Can't Get Permissions on Given File"
-        return $false
-    }
+    if ($IsRegistry -eq $true) {
+        if (!$Path) {return $false}
+        $PermissionsOfObjects = try {
+            get-acl $Path | foreach-object {$_.Access | where-object {$_.IdentityReference -eq $IdentityToQuery}} | select-object -Expandproperty RegistryRights
+        } catch {
+            Write-Error "Can't Get Permissions on Given File . ERROR 1" $Path
+            return $false
+        }
 
-    $PermissionsOfObjects = try {
-        $acl | Where-Object { $_.IdentityReference -eq $IdentityToQuery } | Select-Object -ExpandProperty FileSystemRights
-    } catch {
-        Write-Error "Can't Get Permissions on Given File"
-        return $false
-    }
+    } else {
+        if (!$Path) {return $false}
+        $acl = try {
+            get-acl $Path | Select-Object Access | ForEach-Object {$_.Access | Select-Object IdentityReference,FileSystemRights}
+        } catch {
+            Write-Error "Can't Get Permissions on Given File . ERROR 1" $Path
+            return $false
+        }
 
+        $PermissionsOfObjects = try {
+            $acl | Where-Object { $_.IdentityReference -eq $IdentityToQuery } | Select-Object -ExpandProperty FileSystemRights
+        } catch {
+            Write-Error "Can't Get Permissions on Given File. ERROR 2" $Path
+            return $false
+        }
+    }
+    
     if ($PermissionsOfObjects) {
         return $PermissionsOfObjects
     }
@@ -176,7 +179,7 @@ function RegistryPUTTYSessions {
     $SessionsKeyExists = try {reg query "HKCU\Software\SimonTatham\PuTTY\" | Select-String "Sessions"} catch {Write-Host "Can't Access CURRENT_USER Registry Key"; return $false}
     # If Registry key exists, get all Values
     if ($SessionsKeyExists) {
-        $PUTTYSessions = try {reg query "HKCU\Software\SimonTatham\PuTTY\Sessions /s" | Select-String "Sessions"} catch {Write-Host "Can't Access CURRENT_USER Registry Key"; return $false}
+        $PUTTYSessions = try {reg query "HKCU\Software\SimonTatham\PuTTY\Sessions" /s | Select-String "Sessions"} catch {Write-Host "Can't Access CURRENT_USER Registry Key"; return $false}
         return $PUTTYSessions
     }
     return $false
@@ -193,11 +196,10 @@ function GetSavedCMDKeyCredentials {
 
 
 function CheckStartupApps {
-    GetContextGroups
     # Check If we have any permissions over the directory
 
     $CanWriteToDir = $false
-    foreach ($i in $global:ContextGroups) {
+    foreach ($i in $global:AllContext) {
         $output = GetPermissionsMain "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp" $i
         if ($output -ne $false) {
             if ($output -eq "FullControl" -or $output -eq "Modify" -or $output -eq "Write") {
@@ -216,7 +218,7 @@ function CheckStartupApps {
     $StartUpFiles =  Get-ChildItem "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp" | ForEach-Object {$_ | Select-Object -ExpandProperty Name}
     Write-Host $StartUpFiles
     foreach ($i in $StartUpFiles) {
-        foreach ($j in $global:ContextGroups) {
+        foreach ($j in $global:AllContext) {
             $output = GetPermissionsMain $i $j
             if ($output -ne $false) {
                 if ($output -eq "FullControl" -or $output -eq "Modify" -or $output -eq "Write") {
@@ -242,11 +244,13 @@ function InstalledApplications {
     return $results
 }
 
-function GetServiceBinaries {
-    $results = try { Get-CimInstance -ClassName win32_service -ErrorAction Stop | Select-Object Name,State,PathName } catch {Write-Error "Error Occurred When Executing command"; return}
-    $global:ServiceBinariesPath = $results.PathName
-    $global:ServiceBinariesName = $results.Name
-
+function CleanServicePaths {
+    param(
+        [string]$ServicePath
+    )
+    $tmp = [regex]::Match($ServicePath, '^"?(.+?\.exe)"?').Groups[0].Value
+    $tmp = $tmp -replace '["'']', ''
+    return $tmp
 }
 
 function IsPathVulnerable {
@@ -316,7 +320,6 @@ function DisplayDefenderInfo {
 
 
 function AreCurrentServicePathsVulnerable {
-    GetServiceBinaries
     $VulnSrvList = @()
     $vulnerable = $false
     foreach ($i in $global:ServiceBinariesPath) {
@@ -363,25 +366,25 @@ function GetPowershellConsoleHistory {
 }
 
 function CanWeHijackPath {
+    PrintLineStart("Vulnerable Unqouted Service Paths")
     $VulnerableSerivcePaths = AreCurrentServicePathsVulnerable
     $Paths2check = @()
     foreach ($i in $VulnerableSerivcePaths) {
         $array = $i -split '\\'
         $var = ""
         # Generate list of all valid Directorys in vulnerable path to attempt write access
-        for ($i = 0; $i -lt ($array.Count -1 ); $i++) {
+        for ($i = 0; $i -lt ($array.Count - 1); $i++) {
             $var += ($array[$i] + "\")
             $Paths2check += $var
         }
     }
+	PrintLineFinish("Vulnerable Unqouted Service Paths")
     
     # Armed with all directories is the Path, lets test our premissions
-    GetContextGroups
     $PrivsToHijack = @(
         "Modify"
         "Write"
         "FullControl"
-        "ReadAndExecute"
     )
 
     <# This following function does to following:
@@ -390,37 +393,50 @@ function CanWeHijackPath {
         If the permissions return give us the ability to write or move a file, we print the user:privilege:path
         
         The gameplan was to create a hashtable to lookup the permissions, but some of the permissions return where
-        hexadecimal masks much like linux privileges, this interfered with the array and made the values act in
+        hexadecimal masks much like linux privileges with bit values, this interfered with the array and made the values act in
         weird ways.
 
         Instead of looping through an array of privilege and checking them against the hash table. I compared the string of
         all the privileges to any `like` of the needed permissions
     #>
-    foreach ($i in $Paths2check) {
-
-        $CurrentPrivilegeContext = $global:ContextGroups
-        $CurrentPrivilegeContext += $global:ContextName
-        foreach ($f in $CurrentPrivilegeContext) {
+    PrintLineStart("Can We Hijack Unqouted Paths?")
+    foreach ($i in $Paths2check ) {
+        foreach ($f in $global:AllContext) {
             $PremissionsOnDirectory = GetPermissionsMain $i $f
-            $PremissionsOnDirectory = $PremissionsOnDirectory
             foreach ($j in $PrivsToHijack) {
                 if ($PremissionsOnDirectory -like $j) {
-                    Write-Host "We Can Create a File At the Path:" $i "->" $f ":" $PremissionsOnDirectory -ForegroundColor Red  "(Potential Hijackaing vector)" # I am not adding functionality to get the file needed to place in order to hijack, can't be fucked
+                    Write-Host "We Can Create a File At the Path:" $i "->" $f ":" $PremissionsOnDirectory -ForegroundColor Red  "(Potential Hijackaing vector)"
 
                 }
             }
 
         }
     }
+    PrintLineFinish("Can We Hijack Unqouted Paths?")
 }
 
+function CanWeChangeServiceBinary {
+    param(
+        [string]$ServiceExecutablePath   
+    )
 
-<#
-    The Following Functions Utilise the Above modules, They will provide the features that I want this tool to have
-#>
+    $PrivsToChange = @(
+        "modify"
+        "Write"
+        "FullControl"
+        "AppendData"
+    )
 
-function ServiceVulnerabilities {
-
+    foreach ($i in $global:AllContext) {
+        $result = GetPermissionsMain $ServiceExecutablePath $i
+        foreach ($j in $PrivsToChange) {
+            if ($result -ne $false){
+                if ($result -like $j) {
+                    Write-Host "We Can Write to the Service Binary:" $ServiceExecutablePath "->" $i ":" $result -ForegroundColor Red
+                }
+            }
+        }
+    } 
 }
 
 
@@ -483,6 +499,51 @@ function CheckForStoredPasswords {
 
 }
 
+function SerivceRegistryPermissions{
+    # Get the ACL on the Registry Key associated with the Service Binary
+    PrintLineStart("Can We modify the Service Registry Properties?")
+    $PrivsForAbuse = @(
+    'setvalue'
+    'changepermissions'
+    'takeownership'
+    'writekey'
+    'fullcontrol'
+    )
+
+    foreach ($i in $global:ServiceBinariesName) {
+        foreach ($j in $global:AllContext) {
+            $RegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\" + [string]$i
+            $RegistryACL = GetPermissionsMain $RegPath $j $true
+            if ($RegistryACL -ne $false){
+                foreach ($k in $PrivsForAbuse) {
+                    if ($RegistryACL -like $k) {
+                        Write-Host $RegPath "--->" $RegistryACL ":" $j -ForegroundColor Red
+                    }
+                }
+            }
+        }
+    }
+    PrintLineFinish("Can We modify the Service Registry Properties?")
+}
+
+
+function ServicePermissions{}
+
+
+<#
+    The Following Functions Utilise the Above modules, They will provide the features that I want this tool to have
+#>
+
+function ServiceVulnerabilities {
+    CanWeHijackPath
+    PrintLineStart("Do We have interesting Permissions on Service Binaries?")
+    foreach($j in $global:CleanServicePaths){
+        CanWeChangeServiceBinary $j
+    }
+    PrintLineFinish("Do We have interesting Permissions on Service Binaries?")
+    SerivceRegistryPermissions
+}
+
 
 function GetHistory {
     param(
@@ -525,27 +586,58 @@ function GetHistory {
 }
 
 
+<# This Function exists to collect all the information needed to conduct vulnerability testing and store it in global variables#>
+function IntializeContext{
+
+    ## Get all Groups in the context we are running this script as
+    $ContextGroups = try {
+        whoami /groups /fo csv | Select-Object -Skip 2 | ConvertFrom-Csv -Header Groups | Select-Object -ExpandProperty Groups
+    } catch {
+        Write-Error "Can't use Native Command, Check PATH"
+        return
+    }
+
+    $global:ContextGroups = $ContextGroups
+
+    ## Get all running or non-running service binary name and path
+    $results = try { Get-CimInstance -ClassName win32_service -ErrorAction Stop | Select-Object Name,State,PathName } catch {Write-Error "Error Occurred When Executing command"; return}
+    $global:ServiceBinariesPath = $results.PathName
+    $global:ServiceBinariesName = $results.Name
+
+
+
+    $global:AllContext = $global:ContextGroups + $global:ContextName
+    ## Create a Global with all the clean path names for further analysis for different vulnerabilities
+
+    foreach($j in $global:ServiceBinariesPath){
+        $global:CleanServicePaths += CleanServicePaths $j
+    }
+
+}
+
+
 # The WescelateDefault Function, is the script functionality if no arguments have been passed with the tool
 
 function WescelateDefault {
+    IntializeContext
     $PrivEscItemsHash = @{
         "System Information" = { GetSystemVersion }
         "Vulnerable User Privileges (eg. SeImpersonate)" = { VulnerableUserPrivileges }
         "AlwaysInstallElevated Enabled?" = { AlwaysInstallElevatedCheck }
         "Contents of AutoRun Registry Key" = { CheckRegistryAutoRuns }
         "Access On System Auto Runs" = { CheckStartupApps }
-        "Vulnerable Service Paths (Unqouted Paths) - https://www.pentestpartners.com/security-blog/vulnerabilities-that-arent-unquoted-spaces/ " = { AreCurrentServicePathsVulnerable }
+        "Vulnerable Services - https://www.pentestpartners.com/security-blog/vulnerabilities-that-arent-unquoted-spaces/ " = { ServiceVulnerabilities }
         "Command Line History" = { GetHistory }
 		"Current Installed Applications" = { InstalledApplications }
         "Stored Passwords" = { CheckForStoredPasswords }
 
 	}
-
     Write-Host $global:ProgramBanner -ForegroundColor Green
     Write-Host "====================================================================" -ForegroundColor DarkGreen
     Write-Host
     DisplayDefenderInfo
     Write-Host
+    Write-Host "...."
     Start-Sleep -Seconds 3
     foreach ($key in $PrivEscItemsHash.Keys) {
 		PrintLineStart($key)
@@ -559,23 +651,4 @@ function WescelateDefault {
 
 
 
-
-<#
-    TO DO:
-    DONE - If A service path is unqouted, check all applicable paths to hijack to see If we can hijack
-    - Service Binary Executable Privilege Check
-    - Ability to view our privileges over a service itself
-    - Create function to display service binaries in better view
-    - Get Permission on Registry Objects
-    - Make a seperate mode for Domain Users, such as doamin information and powerview features such as GPO enumeartion
-    - Make a feature to launch a Backdoor eg. (bind shell)
-    - Add Windows Credential Manager vault check
-    - Directory in root directory
-    - Low hanging fruit from other script
-    - Add check for privilege DENY to avoid false administrator positives
-
-#>
-
-#WescelateDefault
-CanWeHijackPath
-#GetPermissionsMain "C:\Program Files (x86)\Epic Games\Epic Online Services\" "BUILTIN\Administrators"
+WescelateDefault
