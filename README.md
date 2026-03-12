@@ -9,6 +9,10 @@ how these vulnreabilities work.
 <img width="1155" height="602" alt="image" src="https://github.com/user-attachments/assets/5d738604-a988-49db-bc26-ab00002db703" />
 
 
+<img width="1266" height="310" alt="image" src="https://github.com/user-attachments/assets/b7e08883-66f2-4937-b42e-428a62c174ed" />
+
+
+
 #### Features
 ------------
 - Seperate modules to check privileges on registry keys and file system objects
