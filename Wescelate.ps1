@@ -2,7 +2,7 @@
 
 .SYNOPSIS
     Windows PrivEsc Enumeration Script for my OSCP exam attempt
-    and future endevours.
+    and future endevours. S.H
 
 
 .NOTES
